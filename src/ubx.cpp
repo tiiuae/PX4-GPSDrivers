@@ -83,7 +83,8 @@ GPSDriverUBX::GPSDriverUBX(Interface gpsInterface, GPSCallbackPtr callback, void
 	_heading_offset(settings.heading_offset),
 	_uart2_baudrate(settings.uart2_baudrate),
 	_ppk_output(settings.ppk_output),
-	_jam_det_sensitivity_hi(settings.jam_det_sensitivity_hi)
+	_jam_det_sensitivity_hi(settings.jam_det_sensitivity_hi),
+	_listen_only(settings.listen_only)
 {
 	decodeInit();
 }
@@ -91,6 +92,20 @@ GPSDriverUBX::GPSDriverUBX(Interface gpsInterface, GPSCallbackPtr callback, void
 GPSDriverUBX::~GPSDriverUBX()
 {
 	delete _rtcm_parsing;
+}
+
+bool
+GPSDriverUBX::tryDetectUBXMessages()
+{
+	// Try to receive valid UBX messages with a 2 second timeout
+	int ret = receive(2000);
+
+	if (ret > 0) {
+		// Got a valid UBX message
+		return true;
+	}
+
+	return false;
 }
 
 int
@@ -138,6 +153,22 @@ GPSDriverUBX::configure(unsigned &baudrate, const GPSConfig &config)
 			decodeInit();
 			receive(20);
 			decodeInit();
+
+			// Listen-only mode: skip configuration and just detect valid UBX messages
+			if (_listen_only) {
+				UBX_DEBUG("Listen-only: trying to detect valid UBX messages at baudrate %i", test_baudrate);
+
+				if (tryDetectUBXMessages()) {
+					UBX_DEBUG("Listen-only: valid UBX messages detected at baudrate %i", test_baudrate);
+					baudrate = test_baudrate;
+					_configured = true;
+					UBX_DEBUG("Listen-only: returning from configure() with success");
+					return 0;
+				}
+
+				UBX_DEBUG("Listen-only: no valid messages at baudrate %i", test_baudrate);
+				continue; // Try next baudrate
+			}
 
 			if (config.cfg_wipe) {
 				/* Send a CFG-CFG message to wipe the FLASH and reload a clean config */
@@ -257,6 +288,19 @@ GPSDriverUBX::configure(unsigned &baudrate, const GPSConfig &config)
 		}
 
 	} else if (_interface == Interface::SPI) {
+
+		// Listen-only mode: skip configuration and just detect valid UBX messages
+		if (_listen_only) {
+			UBX_DEBUG("Listen-only: listening on SPI interface");
+
+			if (tryDetectUBXMessages()) {
+				UBX_DEBUG("Listen-only: valid UBX messages detected on SPI");
+				_configured = true;
+				return 0;
+			}
+
+			return -1;
+		}
 
 		if (config.cfg_wipe) {
 			/* Send a CFG-CFG message to wipe the FLASH and reload a clean config */
@@ -1452,7 +1496,10 @@ GPSDriverUBX::receive(unsigned timeout)
 	int handled = 0;
 
 	while (true) {
-		bool ready_to_return = _configured ? (_got_posllh && _got_velned) : handled;
+		// In listen-only mode, return as soon as we get any valid message
+		// In normal configured mode, wait for both position and velocity messages
+		bool ready_to_return = _listen_only ? (handled > 0) :
+				       (_configured ? (_got_posllh && _got_velned) : handled);
 
 		/* return success if ready */
 		if (ready_to_return) {
@@ -1666,8 +1713,8 @@ GPSDriverUBX::payloadRxInit()
 		} else if (!_configured) {
 			_rx_state = UBX_RXMSG_IGNORE;        // ignore if not _configured
 
-		} else if (!_use_nav_pvt) {
-			_rx_state = UBX_RXMSG_DISABLE;        // disable if not using NAV-PVT
+		} else if (!_use_nav_pvt && !_listen_only) {
+			_rx_state = UBX_RXMSG_DISABLE;        // disable if not using NAV-PVT (except in listen-only)
 		}
 
 		break;
@@ -1872,6 +1919,16 @@ GPSDriverUBX::payloadRxInit()
 		break;
 
 	case UBX_RXMSG_DISABLE:	// disable unexpected messages
+
+		// Do not reconfigure the receiver in listen-only mode.
+		if (_listen_only) {
+			// Treat as an ignored message so that it is parsed safely without
+			// attempting to reconfigure the receiver.
+			_rx_state = UBX_RXMSG_IGNORE;
+			ret = 0;
+			break;
+		}
+
 		UBX_DEBUG("ubx msg 0x%04x len %u unexpected", SWAP16((unsigned)_rx_msg), (unsigned)_rx_payload_length);
 
 		// TODO: UBX-MON-HW2
@@ -1934,6 +1991,11 @@ GPSDriverUBX::payloadRxInit()
 		break;
 	}
 
+	// In listen-only mode, convert IGNORE to HANDLE (accept all valid messages)
+	if (_listen_only && _rx_state == UBX_RXMSG_IGNORE) {
+		_rx_state = UBX_RXMSG_HANDLE;
+	}
+
 	return ret;
 }
 
@@ -1946,7 +2008,10 @@ GPSDriverUBX::payloadRxAdd(const uint8_t b)
 	int ret = 0;
 	uint8_t *p_buf = (uint8_t *)&_buf;
 
-	p_buf[_rx_payload_index] = b;
+	// Consume the full wire payload for checksum validation, buffering only what fits.
+	if (_rx_payload_index < sizeof(_buf)) {
+		p_buf[_rx_payload_index] = b;
+	}
 
 	if (++_rx_payload_index >= _rx_payload_length) {
 		ret = 1;	// payload received completely
@@ -1960,6 +2025,15 @@ GPSDriverUBX::payloadRxAddNavSat(const uint8_t b)
 {
 	int ret = 0;
 	uint8_t *p_buf = (uint8_t *)&_buf;
+
+	// Can't parse satellite info without buffer
+	if (_satellite_info == nullptr) {
+		if (++_rx_payload_index >= _rx_payload_length) {
+			ret = 1;	// payload received completely
+		}
+
+		return ret;
+	}
 
 	if (_rx_payload_index < sizeof(ubx_payload_rx_nav_sat_part1_t)) {
 		// Fill Part 1 buffer
@@ -2080,6 +2154,15 @@ GPSDriverUBX::payloadRxAddNavSvinfo(const uint8_t b)
 {
 	int ret = 0;
 	uint8_t *p_buf = (uint8_t *)&_buf;
+
+	// Can't parse satellite info without buffer
+	if (_satellite_info == nullptr) {
+		if (++_rx_payload_index >= _rx_payload_length) {
+			ret = 1;	// payload received completely
+		}
+
+		return ret;
+	}
 
 	if (_rx_payload_index < sizeof(ubx_payload_rx_nav_svinfo_part1_t)) {
 		// Fill Part 1 buffer
@@ -2267,6 +2350,12 @@ GPSDriverUBX::payloadRxDone()
 
 	case UBX_MSG_NAV_PVT:
 		UBX_TRACE_RXMSG("Rx NAV-PVT");
+
+		// In listen-only mode, set flag based on received message
+		if (_listen_only && !_use_nav_pvt) {
+			_use_nav_pvt = true;
+			UBX_DEBUG("Detected NAV-PVT message");
+		}
 
 		//Check if position fix flag is good
 		if ((_buf.payload_rx_nav_pvt.flags & UBX_RX_NAV_PVT_FLAGS_GNSSFIXOK) == 1) {
@@ -2507,9 +2596,11 @@ GPSDriverUBX::payloadRxDone()
 		UBX_TRACE_RXMSG("Rx NAV-SVINFO");
 
 		// _satellite_info already populated by payload_rx_add_svinfo(), just add a timestamp
-		_satellite_info->timestamp = gps_absolute_time();
+		if (_satellite_info != nullptr) {
+			_satellite_info->timestamp = gps_absolute_time();
+			ret = 2;
+		}
 
-		ret = 2;
 		break;
 
 	case UBX_MSG_NAV_SVIN:
@@ -2518,7 +2609,8 @@ GPSDriverUBX::payloadRxDone()
 			ubx_payload_rx_nav_svin_t &svin = _buf.payload_rx_nav_svin;
 
 			UBX_DEBUG("Survey-in status: %lus cur accuracy: %lumm nr obs: %lu valid: %i active: %i",
-				  svin.dur, svin.meanAcc / 10, svin.obs, static_cast<int>(svin.valid), static_cast<int>(svin.active));
+				  static_cast<unsigned long>(svin.dur), static_cast<unsigned long>(svin.meanAcc / 10),
+				  static_cast<unsigned long>(svin.obs), static_cast<int>(svin.valid), static_cast<int>(svin.active));
 
 			SurveyInStatus status{};
 			double ecef_x = (static_cast<double>(svin.meanX) + static_cast<double>(svin.meanXHP) * 0.01) * 0.01;

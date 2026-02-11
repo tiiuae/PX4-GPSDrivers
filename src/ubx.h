@@ -1016,6 +1016,7 @@ public:
 		bool ppk_output;
 		bool jam_det_sensitivity_hi;
 		UBXMode mode;
+		bool listen_only{false};
 	};
 
 	GPSDriverUBX(Interface gpsInterface, GPSCallbackPtr callback, void *callback_user,
@@ -1060,6 +1061,13 @@ public:
 
 private:
 	int activateRTCMOutput(bool reduce_update_rate);
+
+	/**
+	 * Try to detect valid UBX messages (2 second timeout).
+	 * Used in listen-only mode.
+	 * @return true if valid UBX messages detected, false otherwise
+	 */
+	bool tryDetectUBXMessages();
 
 	/**
 	 * While parsing add every byte (except the sync bytes) to the checksum
@@ -1230,6 +1238,6 @@ private:
 	const int32_t _uart2_baudrate {};
 	const bool _ppk_output {};
 	const bool _jam_det_sensitivity_hi {};
+	const bool _listen_only {};
 };
-
 
