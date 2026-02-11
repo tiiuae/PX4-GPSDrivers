@@ -987,7 +987,8 @@ public:
 		     uint8_t dynamic_model = 7,
 		     float heading_offset = 0.f,
 		     int32_t uart2_baudrate = 57600,
-		     UBXMode mode = UBXMode::Normal);
+		     UBXMode mode = UBXMode::Normal,
+		     bool listen_only = false);
 
 	virtual ~GPSDriverUBX();
 
@@ -1015,6 +1016,13 @@ private:
 private:
 
 	int activateRTCMOutput(bool reduce_update_rate);
+
+	/**
+	 * Try to detect valid UBX messages (2 second timeout).
+	 * Used in listen-only mode.
+	 * @return true if valid UBX messages detected, false otherwise
+	 */
+	bool tryDetectUBXMessages();
 
 	/**
 	 * While parsing add every byte (except the sync bytes) to the checksum
@@ -1177,6 +1185,7 @@ private:
 	const UBXMode _mode;
 	const float _heading_offset;
 	const int32_t _uart2_baudrate;
+	const bool _listen_only;
 };
 
 
