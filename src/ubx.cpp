@@ -351,11 +351,13 @@ GPSDriverUBX::configure(unsigned &baudrate, const GPSConfig &config)
 	}
 
 	if (_output_mode == OutputMode::GPSAndRTCM || _output_mode == OutputMode::RTCM || _mode == UBXMode::MovingBaseUART1 || _ppk_output) {
+#if !defined(GPS_NO_RTK)
 		if (!_rtcm_parsing) {
 			_rtcm_parsing = new RTCMParsing();
 		}
 
 		_rtcm_parsing->reset();
+#endif
 	}
 
 	if (_output_mode == OutputMode::RTCM) {
@@ -377,6 +379,7 @@ GPSDriverUBX::configure(unsigned &baudrate, const GPSConfig &config)
 		return ret;
 	}
 
+#if !defined(GPS_NO_RTK)
 	if (_output_mode == OutputMode::RTCM) {
 		if (restartSurveyIn() < 0) {
 			return -1;
@@ -387,6 +390,7 @@ GPSDriverUBX::configure(unsigned &baudrate, const GPSConfig &config)
 			return -1;
 		}
 	}
+#endif
 
 	_configured = true;
 	return 0;
@@ -946,7 +950,11 @@ int GPSDriverUBX::configureDevice(const GPSConfig &config, const int32_t uart2_b
 	if (_board != Board::u_blox10 && _board != Board::u_blox9 && _board != Board::u_blox10_L1L5) {
 		cfgValsetPort(UBX_CFG_KEY_MSGOUT_UBX_NAV_HPPOSLLH_I2C, 1, cfg_valset_msg_size);
 		cfgValsetPort(UBX_CFG_KEY_MSGOUT_UBX_NAV_RELPOSNED_I2C,
+#if defined(GPS_NO_RTK)
+			      0,
+#else
 			      _mode == UBXMode::RoverWithMovingBaseUART2 || _mode == UBXMode::RoverWithMovingBaseUART1 ? 1 : 0,
+#endif
 			      cfg_valset_msg_size);
 	}
 
@@ -981,9 +989,13 @@ int GPSDriverUBX::configureDevice(const GPSConfig &config, const int32_t uart2_b
 	// always written so a mode change is idempotent; a NAK from a position-only X20P must not abort config.
 	// The receiver side heading offset is zeroed, leaving GPS_YAW_OFFSET as the only offset applied.
 	if (_board == Board::u_blox_X20) {
+#if defined(GPS_NO_RTK)
+		const bool moving_base_setup = false;
+#else
 		const bool moving_base_setup = (_mode == UBXMode::RoverWithMovingBaseUART2)
 					       || (_mode == UBXMode::RoverWithMovingBaseUART1)
 					       || isMovingBase();
+#endif
 
 		cfg_valset_msg_size = initCfgValset();
 		cfgValsetPort(UBX_CFG_KEY_MSGOUT_UBX_NAV_DAHEADING_I2C, moving_base_setup ? 0 : 1, cfg_valset_msg_size);
@@ -1066,6 +1078,9 @@ int GPSDriverUBX::configureDevice(const GPSConfig &config, const int32_t uart2_b
 		}
 
 	} else if (_mode == UBXMode::RoverWithStaticBaseUART2 || _mode == UBXMode::RoverWithMovingBaseUART2) {
+#if defined(GPS_NO_RTK)
+		return -1;
+#else
 		UBX_DEBUG("Configuring UART2 for rover");
 		cfg_valset_msg_size = initCfgValset();
 		cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1OUTPROT_UBX, 1, cfg_valset_msg_size);
@@ -1089,7 +1104,11 @@ int GPSDriverUBX::configureDevice(const GPSConfig &config, const int32_t uart2_b
 			return -1;
 		}
 
+#endif // GPS_NO_RTK
 	} else if (_mode == UBXMode::MovingBaseUART2) {
+#if defined(GPS_NO_RTK)
+		return -1;
+#else
 		UBX_DEBUG("Configuring UART2 for moving base");
 		// enable RTCM output on uart2 + set baudrate
 		cfg_valset_msg_size = initCfgValset();
@@ -1144,7 +1163,11 @@ int GPSDriverUBX::configureDevice(const GPSConfig &config, const int32_t uart2_b
 			return -1;
 		}
 
+#endif // GPS_NO_RTK
 	} else if (_mode == UBXMode::RoverWithMovingBaseUART1) {
+#if defined(GPS_NO_RTK)
+		return -1;
+#else
 		UBX_DEBUG("Configuring UART1 for rover");
 		// heading output period 1 second
 		cfg_valset_msg_size = initCfgValset();
@@ -1162,7 +1185,11 @@ int GPSDriverUBX::configureDevice(const GPSConfig &config, const int32_t uart2_b
 			return -1;
 		}
 
+#endif // GPS_NO_RTK
 	} else if (_mode == UBXMode::MovingBaseUART1) {
+#if defined(GPS_NO_RTK)
+		return -1;
+#else
 		UBX_DEBUG("Configuring UART1 for moving base");
 		// enable RTCM output on uart1
 		cfg_valset_msg_size = initCfgValset();
@@ -1213,6 +1240,7 @@ int GPSDriverUBX::configureDevice(const GPSConfig &config, const int32_t uart2_b
 			return -1;
 		}
 
+#endif // GPS_NO_RTK
 	} else if (_mode == UBXMode::GroundControlStation) {
 		UBX_DEBUG("Configuring UART2 for Ground Control Station");
 		cfg_valset_msg_size = initCfgValset();
@@ -1292,6 +1320,10 @@ bool GPSDriverUBX::cfgValsetPort(uint32_t key_id, uint8_t value, int &msg_size)
 
 int GPSDriverUBX::restartSurveyInPreV27()
 {
+#if defined(GPS_NO_RTK)
+	return -1;
+}
+#else
 	UBX_DEBUG("restartSurveyInPreV27");
 
 	//disable RTCM (MSM7) output
@@ -1370,9 +1402,14 @@ int GPSDriverUBX::restartSurveyInPreV27()
 
 	return 0;
 }
+#endif // !GPS_NO_RTK
 
 int GPSDriverUBX::restartSurveyIn()
 {
+#if defined(GPS_NO_RTK)
+	return -1;
+}
+#else
 	if (_output_mode != OutputMode::RTCM) {
 		return -1;
 	}
@@ -1445,6 +1482,7 @@ int GPSDriverUBX::restartSurveyIn()
 
 	return 0;
 }
+#endif // !GPS_NO_RTK
 
 int	// -1 = NAK, error or timeout, 0 = ACK
 GPSDriverUBX::waitForAck(const uint16_t msg, const unsigned timeout, const bool report)
@@ -1537,6 +1575,7 @@ GPSDriverUBX::parseChar(const uint8_t b)
 {
 	int ret = 0;
 
+#if !defined(GPS_NO_RTK)
 	if (_rtcm_parsing) {
 		if (_rtcm_parsing->addByte(b)) {
 			gotRTCMMessage(_rtcm_parsing->message(), _rtcm_parsing->messageLength());
@@ -1545,6 +1584,7 @@ GPSDriverUBX::parseChar(const uint8_t b)
 			return ret;
 		}
 	}
+#endif
 
 	switch (_decode_state) {
 
@@ -1667,9 +1707,11 @@ GPSDriverUBX::parseChar(const uint8_t b)
 		} else {
 			ret = payloadRxDone();	// finish payload processing
 
+#if !defined(GPS_NO_RTK)
 			if (_rtcm_parsing) {
 				_rtcm_parsing->reset();
 			}
+#endif
 		}
 
 		decodeInit();
@@ -2571,6 +2613,10 @@ GPSDriverUBX::payloadRxDone()
 		break;
 
 	case UBX_MSG_NAV_SVIN:
+#if defined(GPS_NO_RTK)
+		ret = 1;
+		break;
+#else
 		UBX_TRACE_RXMSG("Rx NAV-SVIN");
 		{
 			ubx_payload_rx_nav_svin_t &svin = _buf.payload_rx_nav_svin;
@@ -2597,6 +2643,7 @@ GPSDriverUBX::payloadRxDone()
 
 		ret = 1;
 		break;
+#endif // GPS_NO_RTK
 
 	case UBX_MSG_NAV_VELNED:
 		UBX_TRACE_RXMSG("Rx NAV-VELNED");
@@ -2616,6 +2663,10 @@ GPSDriverUBX::payloadRxDone()
 		break;
 
 	case UBX_MSG_NAV_RELPOSNED:
+#if defined(GPS_NO_RTK)
+		ret = 1;
+		break;
+#else
 		UBX_TRACE_RXMSG("Rx NAV-RELPOSNED");
 		{
 			const float rel_length_cm = _buf.payload_rx_nav_relposned.relPosLength + _buf.payload_rx_nav_relposned.relPosHPLength * 1e-2f;
@@ -2678,8 +2729,13 @@ GPSDriverUBX::payloadRxDone()
 		}
 
 		break;
+#endif // GPS_NO_RTK
 
 	case UBX_MSG_NAV_DAHEADING:
+#if defined(GPS_NO_RTK)
+		ret = 1;
+		break;
+#else
 		UBX_TRACE_RXMSG("Rx NAV-DAHEADING");
 		{
 			const float rel_length_m = _buf.payload_rx_nav_daheading.relPosLength * 1e-3f; // mm -> m
@@ -2738,6 +2794,7 @@ GPSDriverUBX::payloadRxDone()
 		}
 
 		break;
+#endif // GPS_NO_RTK
 
 	case UBX_MSG_MON_VER:
 		UBX_TRACE_RXMSG("Rx MON-VER");
@@ -2838,6 +2895,10 @@ GPSDriverUBX::payloadRxDone()
 int
 GPSDriverUBX::activateRTCMOutput(bool reduce_update_rate)
 {
+#if defined(GPS_NO_RTK)
+	(void)reduce_update_rate;
+	return -1;
+#else
 	/* For base stations we switch to 1 Hz update rate, which is enough for RTCM output.
 	 * For the survey-in, we still want 5/10 Hz, because this speeds up the process */
 
@@ -2901,6 +2962,7 @@ GPSDriverUBX::activateRTCMOutput(bool reduce_update_rate)
 	}
 
 	return 0;
+#endif // GPS_NO_RTK
 }
 
 void
